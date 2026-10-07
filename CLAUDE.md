@@ -11,7 +11,7 @@ Serveur MCP GitLab en TypeScript, exécuté par Bun. Lecture seule. GitLab est a
 - `MCP_TRANSPORT=http MCP_AUTH_DISABLED=true GITLAB_TOKEN=... bun src/index.ts` — serveur HTTP sans auth
 - `docker build -t gitlab-mcp .` — image de déploiement (mode HTTP par défaut)
 
-CI : `.gitlab-ci.yml` = un seul job `build` (docker:dind) qui pousse l'image sur le registry GitLab, sur `master` et les tags uniquement. Volontairement minimal.
+CI : `.github/workflows/build.yml` = un seul job `build` qui pousse l'image sur `ghcr.io/blumana-org/gitlab-mcp`, sur `master` et les tags uniquement. Volontairement minimal.
 
 Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul).
 

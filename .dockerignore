@@ -3,7 +3,7 @@ node_modules
 .env*
 *.test.ts
 Dockerfile
-.gitlab-ci.yml
+.github
 .dockerignore
 README.md
 CLAUDE.md

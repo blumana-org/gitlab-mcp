@@ -47,12 +47,12 @@ claude mcp add gitlab -e GITLAB_TOKEN=glpat-xxx -- bun "$PWD/src/index.ts"
 ## Déploiement (Docker, HTTP + SSO)
 
 ```sh
-docker build -t gitlab-mcp .
-docker run -d -p 3000:3000 --env-file .env gitlab-mcp
+docker run -d -p 3000:3000 --env-file .env ghcr.io/blumana-org/gitlab-mcp:latest
+# ou en local : docker build -t gitlab-mcp .
 ```
 
-L'image est construite par la CI GitLab (`.gitlab-ci.yml`) et poussée sur le registry du projet :
-`$CI_REGISTRY_IMAGE:<sha court>` à chaque build, `:latest` sur `master`, `:<tag>` sur les tags git.
+L'image est construite par GitHub Actions (`.github/workflows/build.yml`) et poussée sur GitHub Container Registry :
+`ghcr.io/blumana-org/gitlab-mcp:sha-<sha court>` à chaque build, `:latest` sur `master`, `:<tag>` sur les tags git.
 
 - Endpoint MCP : `POST $MCP_PUBLIC_URL/mcp` (Streamable HTTP, stateless → scalable horizontalement)
 - Healthcheck : `GET /health`

@@ -1,7 +1,8 @@
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTPayload } from "jose";
 
 export interface OidcConfig {
+  /** Exact `iss` value of the IdP's tokens (trailing slash matters, e.g. Auth0). */
   issuer: string;
   /** Expected `aud` claim. At least one of audience / clientId must be set. */
   audience?: string;
@@ -17,7 +18,7 @@ const list = (v: string | undefined) => v?.split(/[\s,]+/).filter(Boolean) ?? []
 export function oidcConfigFromEnv(env = process.env): OidcConfig | null {
   if (!env.OIDC_ISSUER) return null;
   const config: OidcConfig = {
-    issuer: env.OIDC_ISSUER.replace(/\/+$/, ""),
+    issuer: env.OIDC_ISSUER,
     audience: env.OIDC_AUDIENCE || undefined,
     clientId: env.OIDC_CLIENT_ID || undefined,
     scopes: list(env.OIDC_SCOPES ?? "openid profile email"),
@@ -31,7 +32,7 @@ export function oidcConfigFromEnv(env = process.env): OidcConfig | null {
 }
 
 async function discoverJwksUri(issuer: string): Promise<string> {
-  const res = await fetch(`${issuer}/.well-known/openid-configuration`);
+  const res = await fetch(`${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`);
   if (!res.ok) throw new Error(`OIDC discovery failed for ${issuer}: HTTP ${res.status}`);
   const { jwks_uri } = (await res.json()) as { jwks_uri?: string };
   if (!jwks_uri) throw new Error(`No jwks_uri in OIDC discovery document of ${issuer}`);
@@ -79,4 +80,14 @@ export function protectedResourceMetadata(config: OidcConfig, resource: string) 
     bearer_methods_supported: ["header"],
     resource_name: "GitLab MCP",
   };
+}
+
+/** Unverified claims useful to diagnose a rejected token (never log the token itself). */
+export function describeToken(token: string): Record<string, unknown> {
+  try {
+    const { iss, aud, azp, client_id, exp, sub, scope, scp } = decodeJwt(token);
+    return { iss, aud, azp, client_id, sub, scope: scope ?? scp, exp: exp && new Date(exp * 1000).toISOString() };
+  } catch {
+    return { format: token.split(".").length === 3 ? "malformed JWT" : "not a JWT (opaque token?)" };
+  }
 }

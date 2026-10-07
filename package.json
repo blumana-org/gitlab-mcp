@@ -18,6 +18,7 @@
   "scripts": {
     "start": "bun src/index.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "doctor": "bun src/doctor.ts"
   }
 }

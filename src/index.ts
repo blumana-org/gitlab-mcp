@@ -20,7 +20,8 @@ if (transport === "stdio") {
     throw new Error("HTTP mode requires OIDC_ISSUER (or MCP_AUTH_DISABLED=true for local dev)");
   }
   const auth = oidc ? { config: oidc, verify: createTokenVerifier(oidc) } : null;
-  const server = startHttpServer({ port, publicUrl, gitlab, auth });
+  const debug = process.env.MCP_DEBUG === "true";
+  const server = startHttpServer({ port, publicUrl, gitlab, auth, debug });
   console.error(`gitlab-mcp listening on ${server.url} (public: ${publicUrl}, auth: ${oidc ? oidc.issuer : "DISABLED"})`);
 } else {
   throw new Error(`Unknown MCP_TRANSPORT "${transport}" (expected stdio or http)`);

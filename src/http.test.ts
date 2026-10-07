@@ -88,11 +88,23 @@ test("accepts a valid token and serves MCP", async () => {
   expect(body.result.tools.map((t: any) => t.name)).toContain("get_job");
 });
 
+test("401 explains why a token was rejected", async () => {
+  const res = await listTools(await sign({ azp: "other-app" }));
+  expect(res.headers.get("www-authenticate")).toContain("Token was not issued to client gitlab-mcp-public");
+});
+
+test("issuer with trailing slash validates and discovers JWKS", async () => {
+  const config: OidcConfig = { issuer: `${issuer}/`, clientId: CLIENT_ID, scopes: [] };
+  const info = await createTokenVerifier(config)(await sign({ azp: CLIENT_ID }, `${issuer}/`));
+  expect(info.clientId).toBe(CLIENT_ID);
+});
+
 test("oidcConfigFromEnv requires audience or client id", () => {
   expect(oidcConfigFromEnv({})).toBeNull();
   expect(() => oidcConfigFromEnv({ OIDC_ISSUER: "https://idp" })).toThrow();
+  // Issuer is kept verbatim: some IdPs (Auth0) put a trailing slash in `iss`.
   expect(oidcConfigFromEnv({ OIDC_ISSUER: "https://idp/", OIDC_CLIENT_ID: "c" })).toMatchObject({
-    issuer: "https://idp",
+    issuer: "https://idp/",
     scopes: ["openid", "profile", "email"],
   });
 });

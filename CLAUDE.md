@@ -20,6 +20,7 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - `src/index.ts` — point d'entrée : choisit le transport selon `MCP_TRANSPORT` (`stdio` | `http`)
 - `src/server.ts` — `createMcpServer()` : instancie le `McpServer` et enregistre les outils
 - `src/http.ts` — `Bun.serve` : `/mcp` (Streamable HTTP **stateless**, un server+transport par requête), `/health`, métadonnées RFC 9728
+- `src/doctor.ts` — `bun run doctor <mcp-url> [--client-id]` : rejoue le flux OAuth MCP étape par étape (découverte, login PKCE, appel authentifié)
 - `src/auth.ts` — config OIDC depuis l'env, vérification JWT (`jose`, JWKS découvert), métadonnées de ressource protégée
 - `src/gitlab.ts` — client REST v4 minimal (`fetch` + header `PRIVATE-TOKEN`), pagination via headers `x-*`, helpers de log (`cleanLog`, `tail`)
 - `src/tools.ts` — déclaration des outils MCP (`registerTool` + schémas zod) et projections « slim »
@@ -38,6 +39,8 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 ## Auth (mode HTTP)
 
 - Le serveur est un *resource server* : il ne délivre pas de tokens, il valide ceux de l'IdP (`iss`, signature, `exp`, `aud` et/ou `azp`).
+- `OIDC_ISSUER` est comparé **tel quel** au claim `iss` (ne pas normaliser le `/` final).
+- Les rejets sont toujours loggés (raison + claims attendus/reçus, jamais le token) ; `MCP_DEBUG=true` logue aussi les succès.
 - `OIDC_AUDIENCE` ou `OIDC_CLIENT_ID` est obligatoire : sinon n'importe quel token de l'IdP serait accepté.
 - Ne jamais transmettre le token utilisateur à GitLab (pas de *token passthrough*) ; GitLab utilise uniquement `GITLAB_TOKEN`.
 - Le `AuthInfo` validé est passé à `transport.handleRequest(req, { authInfo })` et accessible dans les handlers via `extra.authInfo`.

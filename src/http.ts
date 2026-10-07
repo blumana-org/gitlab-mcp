@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { protectedResourceMetadata, type OidcConfig, type TokenVerifier } from "./auth.ts";
+import { describeToken, protectedResourceMetadata, type OidcConfig, type TokenVerifier } from "./auth.ts";
 import type { GitLabClient } from "./gitlab.ts";
 import { createMcpServer } from "./server.ts";
 
@@ -9,19 +9,22 @@ export interface HttpOptions {
   /** Public base URL of this server, e.g. https://gitlab-mcp.example.com */
   publicUrl: string;
   gitlab: GitLabClient;
+  /** Log every auth decision, not only rejections. */
+  debug?: boolean;
   /** null = authentication disabled (dev only). */
   auth: { config: OidcConfig; verify: TokenVerifier } | null;
 }
 
 const PRM_PATH = "/.well-known/oauth-protected-resource";
 
-export function startHttpServer({ port, publicUrl, gitlab, auth }: HttpOptions) {
+export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }: HttpOptions) {
   const base = publicUrl.replace(/\/+$/, "");
   const resource = `${base}/mcp`;
   const metadataUrl = `${base}${PRM_PATH}/mcp`;
 
-  const unauthorized = (error: string, description: string) =>
-    Response.json(
+  const unauthorized = (error: string, description: string) => {
+    description = description.replace(/["\\\r\n]/g, "'");
+    return Response.json(
       { error, error_description: description },
       {
         status: 401,
@@ -30,17 +33,31 @@ export function startHttpServer({ port, publicUrl, gitlab, auth }: HttpOptions) 
         },
       },
     );
+  };
 
   async function authenticate(req: Request): Promise<AuthInfo | Response | undefined> {
     if (!auth) return undefined;
     const header = req.headers.get("authorization") ?? "";
     const match = /^Bearer\s+(.+)$/i.exec(header);
-    if (!match) return unauthorized("invalid_request", "Missing bearer token");
+    if (!match) {
+      if (debug) console.error(`[auth] ${req.method} /mcp without bearer token -> 401 (normal first step of the OAuth flow)`);
+      return unauthorized("invalid_request", "Missing bearer token");
+    }
     try {
-      return await auth.verify(match[1]!);
+      const info = await auth.verify(match[1]!);
+      if (debug) console.error(`[auth] accepted token for sub=${info.extra?.sub} client=${info.clientId}`);
+      return info;
     } catch (err) {
-      console.error("token rejected:", err instanceof Error ? err.message : err);
-      return unauthorized("invalid_token", "Invalid or expired token");
+      const reason = err instanceof Error ? err.message : String(err);
+      // Expected values vs what the token carries: that's what you need to fix a mismatch.
+      console.error(
+        `[auth] token rejected: ${reason}`,
+        JSON.stringify({
+          expected: { iss: auth.config.issuer, aud: auth.config.audience, azp: auth.config.clientId },
+          got: describeToken(match[1]!),
+        }),
+      );
+      return unauthorized("invalid_token", `Token rejected: ${reason}`);
     }
   }
 
@@ -62,8 +79,10 @@ export function startHttpServer({ port, publicUrl, gitlab, auth }: HttpOptions) 
     }
   }
 
-  const prm = () =>
-    auth ? Response.json(protectedResourceMetadata(auth.config, resource)) : new Response("Not found", { status: 404 });
+  const prm = (req: Request) => {
+    if (debug) console.error(`[auth] metadata requested: ${new URL(req.url).pathname}`);
+    return auth ? Response.json(protectedResourceMetadata(auth.config, resource)) : new Response("Not found", { status: 404 });
+  };
 
   return Bun.serve({
     port,
@@ -73,6 +92,10 @@ export function startHttpServer({ port, publicUrl, gitlab, auth }: HttpOptions) 
       [`${PRM_PATH}/mcp`]: prm,
       "/mcp": handleMcp,
     },
-    fetch: () => new Response("Not found", { status: 404 }),
+    fetch: (req) => {
+      // Clients probing other well-known paths (e.g. authorization server metadata on the wrong host) land here.
+      if (debug) console.error(`[http] 404 ${req.method} ${new URL(req.url).pathname}`);
+      return new Response("Not found", { status: 404 });
+    },
   });
 }

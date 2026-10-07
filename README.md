@@ -38,6 +38,7 @@ Voir [`.env.example`](.env.example).
 | `OIDC_SCOPES`       | http  | `openid profile email`   | Scopes annoncés au client MCP |
 | `OIDC_JWKS_URI`     | http  | découvert                | Override de l'URI JWKS |
 | `MCP_AUTH_DISABLED` | http  | `false`                  | `true` = pas d'auth (dev local uniquement) |
+| `MCP_DEBUG`         | http  | `false`                  | `true` = log chaque étape d'auth (pas seulement les rejets) |
 
 ## Usage local (stdio)
 
@@ -88,6 +89,32 @@ claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp \
 
 Puis `/mcp` dans Claude Code → *Authenticate* : le navigateur s'ouvre sur le SSO.
 
+### Débugger l'OAuth
+
+Quand l'auth échoue dans Claude Code, isoler l'étape fautive :
+
+1. **Rejouer le flux avec le doctor** (depuis ton poste) :
+   ```sh
+   bun run doctor https://gitlab-mcp.example.com/mcp                                   # découverte seule
+   bun run doctor https://gitlab-mcp.example.com/mcp --client-id gitlab-mcp --callback-port 8765   # + vrai login
+   ```
+   Il vérifie dans l'ordre : le 401 + `resource_metadata`, les métadonnées de ressource, la découverte de l'IdP (issuer, PKCE S256), le login, l'échange de code, puis un appel MCP authentifié avec le token obtenu. Le premier ✗ indique le problème.
+2. **Logs serveur** : tout rejet de token est loggé avec la raison et la comparaison attendu / reçu (`iss`, `aud`, `azp`, `exp`), sans le token. `MCP_DEBUG=true` logue aussi les étapes réussies et les 404. La raison est aussi renvoyée dans le `WWW-Authenticate` du 401.
+3. **Logs Claude Code** : `claude --debug` (ou `--debug-file /tmp/claude.log`), puis `/mcp` → *Authenticate*.
+
+Causes fréquentes :
+
+| Symptôme | Cause probable |
+| --- | --- |
+| Pas de `resource_metadata` dans le 401 | Un reverse proxy supprime le header `WWW-Authenticate` |
+| `resource` différent de l'URL utilisée | `MCP_PUBLIC_URL` incorrect |
+| `issuer` ne correspond pas | `OIDC_ISSUER` doit être identique au champ `issuer` de l'IdP (y compris le `/` final) |
+| L'IdP renvoie `redirect_uri` invalide | Redirect URI `http://localhost:<callback-port>/callback` non autorisée sur le client |
+| L'IdP refuse le paramètre `resource` (Entra ID) | Tester avec `--no-resource` |
+| L'échange de code demande un secret | Le client n'est pas configuré en *public* |
+| `Token was not issued to client` / `unexpected "aud"` | `OIDC_CLIENT_ID` / `OIDC_AUDIENCE` ne correspondent pas aux claims (voir le log serveur) |
+| `not a JWT (opaque token?)` | L'IdP émet des access tokens opaques : non supporté |
+
 ## Workflow de debug typique
 
 1. `search_projects` → récupérer le chemin du projet
@@ -99,6 +126,7 @@ Puis `/mcp` dans Claude Code → *Authenticate* : le navigateur s'ouvre sur le S
 
 ```sh
 bun test            # tests unitaires + intégration HTTP/auth (IdP simulé)
+bun run doctor <mcp-url> [--client-id ...]   # diagnostic du flux OAuth
 bun run typecheck   # tsc --noEmit
 bun run start       # serveur stdio
 MCP_TRANSPORT=http MCP_AUTH_DISABLED=true bun run start   # serveur HTTP sans auth

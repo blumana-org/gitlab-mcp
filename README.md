@@ -100,7 +100,7 @@ Quand l'auth échoue dans Claude Code, isoler l'étape fautive :
    bun run doctor https://gitlab-mcp.example.com/mcp --client-id gitlab-mcp --callback-port 8765   # + vrai login
    ```
    Il vérifie dans l'ordre : le 401 + `resource_metadata`, les métadonnées de ressource, la découverte de l'IdP (issuer, PKCE S256), le login, l'échange de code, puis un appel MCP authentifié avec le token obtenu. Le premier ✗ indique le problème.
-2. **Logs serveur** : au démarrage, `GitLab OK ... as <user>` ou `GitLab check FAILED: ...` ; puis une ligne par requête `/mcp` (`[http] POST /mcp 200 12ms`) et par appel d'outil (`[tool] get_job ok 230ms` / `error ...`). Aucune ligne `[http]` = la requête n'atteint pas le conteneur. tout rejet de token est loggé avec la raison et la comparaison attendu / reçu (`iss`, `aud`, `azp`, `exp`), sans le token. `MCP_DEBUG=true` logue aussi les étapes réussies et les 404. La raison est aussi renvoyée dans le `WWW-Authenticate` du 401.
+2. **Logs serveur** : au démarrage, `GitLab OK ... as <user>` ou `GitLab check FAILED: ...` ; puis une ligne par requête `/mcp` (`[http] POST /mcp 200 12ms`) et par appel d'outil (`[tool] get_job ok 230ms` / `error ...`). Aucune ligne `[http]` = la requête n'atteint pas le conteneur. Tout rejet de token est loggé avec la raison et la comparaison attendu / reçu (`iss`, `aud`, `azp`, `exp`), sans le token. `MCP_DEBUG=true` logue aussi les étapes réussies et les 404. La raison est aussi renvoyée dans le `WWW-Authenticate` du 401.
 3. **Logs Claude Code** : `claude --debug` (ou `--debug-file /tmp/claude.log`), puis `/mcp` → *Authenticate*.
 
 Causes fréquentes :

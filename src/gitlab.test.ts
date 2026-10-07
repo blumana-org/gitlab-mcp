@@ -47,7 +47,7 @@ test("missing next page is null", async () => {
 test("non-2xx throws GitLabError", async () => {
   mockFetch('{"message":"404 Project Not Found"}', { status: 404 });
   const gl = new GitLabClient("https://gitlab.com", "t");
-  expect(gl.get("/projects/nope")).rejects.toBeInstanceOf(GitLabError);
+  await expect(gl.get("/projects/nope")).rejects.toBeInstanceOf(GitLabError);
 });
 
 test("cleanLog strips ANSI and section markers", () => {
@@ -62,4 +62,14 @@ test("cleanLog strips ANSI and section markers", () => {
 test("tail keeps last lines with a marker", () => {
   expect(tail("a\nb\nc", 5)).toBe("a\nb\nc");
   expect(tail("a\nb\nc\nd", 2)).toBe("[... 2 lines truncated ...]\nc\nd");
+});
+
+test("unresponsive GitLab fails fast with an explicit error", async () => {
+  const hang = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+  try {
+    const gl = new GitLabClient(hang.url.origin, "t", 50);
+    await expect(gl.get("/user")).rejects.toThrow(/GitLab unreachable at .*no response after 50ms/);
+  } finally {
+    hang.stop(true);
+  }
 });

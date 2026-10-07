@@ -9,6 +9,12 @@ import { createMcpServer } from "./server.ts";
 const gitlab = GitLabClient.fromEnv();
 const transport = process.env.MCP_TRANSPORT ?? "stdio";
 
+// Surface GitLab connectivity/token problems at boot instead of on the first tool call.
+gitlab.whoami().then(
+  (user) => console.error(`GitLab OK (${process.env.GITLAB_URL ?? "https://gitlab.com"}) as ${user}`),
+  (err) => console.error(`GitLab check FAILED: ${err instanceof Error ? err.message : err}`),
+);
+
 if (transport === "stdio") {
   await createMcpServer(gitlab).connect(new StdioServerTransport());
   console.error("gitlab-mcp running on stdio");

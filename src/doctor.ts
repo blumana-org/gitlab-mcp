@@ -205,4 +205,18 @@ ok("initialize accepted");
 const list = await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list" }, tokens.access_token);
 const tools = ((await list.json()) as any).result?.tools?.map((t: any) => t.name) ?? [];
 ok(`tools: ${tools.join(", ")}`);
-step("All good: the server side works, if Claude Code still fails, compare with its debug logs.");
+
+// 7. A real tool call: exercises the server -> GitLab leg (PAT, network, GITLAB_URL).
+step("7. Tool call (search_projects)");
+const t0 = performance.now();
+const call = await mcpPost(
+  { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search_projects", arguments: { search: "a", per_page: 1 } } },
+  tokens.access_token,
+).catch((err) => fail(`request failed: ${err instanceof Error ? err.message : err}`));
+const ms = Math.round(performance.now() - t0);
+if (call.status !== 200) fail(`HTTP ${call.status} after ${ms}ms: ${(await call.text()).slice(0, 300)}`);
+const result = ((await call.json()) as any).result;
+const text: string = result?.content?.[0]?.text ?? "";
+if (result?.isError) fail(`tool error after ${ms}ms: ${text}`);
+ok(`ok in ${ms}ms: ${text.replace(/\s+/g, " ").slice(0, 160)}`);
+step("All good: the server side works, if Claude still fails, compare with its debug logs.");

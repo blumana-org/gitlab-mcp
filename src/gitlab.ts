@@ -32,6 +32,7 @@ export class GitLabClient {
   constructor(
     baseUrl: string,
     private token: string,
+    private timeoutMs = 20_000,
   ) {
     this.apiBase = `${baseUrl.replace(/\/+$/, "")}/api/v4`;
   }
@@ -39,7 +40,7 @@ export class GitLabClient {
   static fromEnv(env = process.env): GitLabClient {
     const token = env.GITLAB_TOKEN;
     if (!token) throw new Error("GITLAB_TOKEN is required");
-    return new GitLabClient(env.GITLAB_URL ?? "https://gitlab.com", token);
+    return new GitLabClient(env.GITLAB_URL ?? "https://gitlab.com", token, Number(env.GITLAB_TIMEOUT_MS ?? 20_000));
   }
 
   private url(path: string, query: Query = {}): string {
@@ -54,11 +55,25 @@ export class GitLabClient {
   }
 
   private async request(path: string, query?: Query): Promise<Response> {
-    const res = await fetch(this.url(path, query), {
-      headers: { "PRIVATE-TOKEN": this.token },
-    });
+    const url = this.url(path, query);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { "PRIVATE-TOKEN": this.token },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      // Network-level failure (DNS, TLS, firewall, timeout): say so explicitly instead of hanging.
+      const reason = err instanceof Error && err.name === "TimeoutError" ? `no response after ${this.timeoutMs}ms` : String(err);
+      throw new Error(`GitLab unreachable at ${this.apiBase}: ${reason}`);
+    }
     if (!res.ok) throw new GitLabError(res.status, path, await res.text());
     return res;
+  }
+
+  /** Checks connectivity and token at startup; returns the token's username. */
+  async whoami(): Promise<string> {
+    return (await this.get<{ username: string }>("/user")).username;
   }
 
   async get<T>(path: string, query?: Query): Promise<T> {

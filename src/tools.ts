@@ -78,15 +78,19 @@ const json = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
 });
 
-function safe<A>(fn: (args: A) => Promise<unknown>) {
+// Logs one line per call on stderr (safe in stdio mode) and turns errors into tool errors.
+function safe<A>(name: string, fn: (args: A) => Promise<unknown>) {
   return async (args: A) => {
+    const start = performance.now();
+    const elapsed = () => `${Math.round(performance.now() - start)}ms`;
     try {
-      return json(await fn(args));
+      const result = json(await fn(args));
+      console.error(`[tool] ${name} ok ${elapsed()}`);
+      return result;
     } catch (err) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-      };
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[tool] ${name} error ${elapsed()}: ${message}`);
+      return { isError: true, content: [{ type: "text" as const, text: message }] };
     }
   };
 }
@@ -105,7 +109,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ search, membership, page, per_page }) => {
+    safe("search_projects", async ({ search, membership, page, per_page }) => {
       const res = await gl.getPage<any>("/projects", {
         search,
         membership,
@@ -135,7 +139,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ project, page, per_page, ...filters }) => {
+    safe("list_pipelines", async ({ project, page, per_page, ...filters }) => {
       const res = await gl.getPage<any>(`${projectPath(project)}/pipelines`, {
         ...filters,
         order_by: "id",
@@ -158,7 +162,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(({ project, pipeline_id }) =>
+    safe("get_pipeline", ({ project, pipeline_id }) =>
       gl.get(`${projectPath(project)}/pipelines/${pipeline_id}`),
     ),
   );
@@ -179,7 +183,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ project, pipeline_id, scope, include_retried, page, per_page }) => {
+    safe("list_jobs", async ({ project, pipeline_id, scope, include_retried, page, per_page }) => {
       const base = projectPath(project);
       const path = pipeline_id ? `${base}/pipelines/${pipeline_id}/jobs` : `${base}/jobs`;
       const query: Query = { scope, page, per_page };
@@ -203,7 +207,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ project, job_id, include_log, log_tail_lines }) => {
+    safe("get_job", async ({ project, job_id, include_log, log_tail_lines }) => {
       const base = `${projectPath(project)}/jobs/${job_id}`;
       const job = await gl.get<any>(base);
       if (!include_log) return job;
@@ -221,7 +225,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       inputSchema: { project, page, per_page: perPage },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ project, page, per_page }) => {
+    safe("list_registry_repositories", async ({ project, page, per_page }) => {
       const res = await gl.getPage<any>(`${projectPath(project)}/registry/repositories`, {
         tags_count: true,
         page,
@@ -246,7 +250,7 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       },
       annotations: { readOnlyHint: true },
     },
-    safe(async ({ project, repository_id, include_details, page, per_page }) => {
+    safe("list_registry_tags", async ({ project, repository_id, include_details, page, per_page }) => {
       const base = `${projectPath(project)}/registry/repositories/${repository_id}/tags`;
       const res = await gl.getPage<any>(base, { page, per_page });
       if (!include_details) return { ...res, items: res.items.map((t) => ({ name: t.name, location: t.location })) };

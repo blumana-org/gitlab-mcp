@@ -61,7 +61,19 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
     }
   }
 
+  // Always-on access log: if a call never shows up here, it never reached this container.
   async function handleMcp(req: Request): Promise<Response> {
+    const start = performance.now();
+    const res = await serveMcp(req).catch((err) => {
+      console.error("[http] /mcp crashed:", err);
+      return new Response("Internal error", { status: 500 });
+    });
+    const who = req.headers.get("authorization") ? "bearer" : "anonymous";
+    console.error(`[http] ${req.method} /mcp ${res.status} ${Math.round(performance.now() - start)}ms (${who})`);
+    return res;
+  }
+
+  async function serveMcp(req: Request): Promise<Response> {
     const authInfo = await authenticate(req);
     if (authInfo instanceof Response) return authInfo;
 

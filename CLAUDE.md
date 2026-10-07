@@ -33,13 +33,14 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - Les réponses sont du JSON texte. Les listes passent par des projections `slim*` pour économiser des tokens ; les `get_*` renvoient l'objet GitLab complet.
 - Paginer via `GitLabClient.getPage` et renvoyer `{ items, pagination }`.
 - Les paramètres tableau sont sérialisés au format Rails (`scope[]=a&scope[]=b`) par le client.
-- Encapsuler les handlers avec `safe()` pour renvoyer les erreurs GitLab en `isError` plutôt que de crasher.
+- Encapsuler les handlers avec `safe(name, fn)` (log une ligne `[tool]` par appel) pour renvoyer les erreurs GitLab en `isError` plutôt que de crasher.
 - `project` = ID ou chemin complet, toujours passé par `projectPath()` (URL-encodé).
 
 ## Auth (mode HTTP)
 
 - Le serveur est un *resource server* : il ne délivre pas de tokens, il valide ceux de l'IdP (`iss`, signature, `exp`, `aud` et/ou `azp`).
 - `OIDC_ISSUER` est comparé **tel quel** au claim `iss` (ne pas normaliser le `/` final).
+- Logs toujours actifs : check GitLab au boot, une ligne `[http]` par requête `/mcp`, une ligne `[tool]` par appel. Les appels GitLab ont un timeout (`GITLAB_TIMEOUT_MS`).
 - Les rejets sont toujours loggés (raison + claims attendus/reçus, jamais le token) ; `MCP_DEBUG=true` logue aussi les succès.
 - `OIDC_AUDIENCE` ou `OIDC_CLIENT_ID` est obligatoire : sinon n'importe quel token de l'IdP serait accepté.
 - Ne jamais transmettre le token utilisateur à GitLab (pas de *token passthrough*) ; GitLab utilise uniquement `GITLAB_TOKEN`.

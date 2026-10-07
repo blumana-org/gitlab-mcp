@@ -15,6 +15,8 @@ Objectif : permettre à Claude Code d'inspecter et de débugger les pipelines CI
 | `get_pipeline`    | Détail d'un pipeline                                                        |
 | `list_jobs`       | Jobs d'un projet ou d'un pipeline (`pipeline_id`) ; filtre `scope` (ex. `["failed"]`) (paginé) |
 | `get_job`         | Détail d'un job ; `include_log: true` ajoute la fin du log (ANSI nettoyé, `log_tail_lines` = 200 par défaut) |
+| `list_registry_repositories` | Images Docker du registry du projet, avec leur nombre de tags (paginé) |
+| `list_registry_tags` | Tags d'une image ; `include_details: true` ajoute digest, taille et date (paginé) |
 
 Le paramètre `project` accepte un ID numérique ou un chemin complet (`group/sub/project`).
 Les outils paginés renvoient `{ items, pagination: { page, per_page, next_page, prev_page, total, total_pages } }`.

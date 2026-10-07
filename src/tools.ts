@@ -57,6 +57,23 @@ const slimJob = (j: any) => ({
   web_url: j.web_url,
 });
 
+const slimRepository = (r: any) => ({
+  id: r.id,
+  name: r.name,
+  path: r.path,
+  location: r.location,
+  tags_count: r.tags_count,
+  created_at: r.created_at,
+});
+
+const slimTag = (t: any) => ({
+  name: t.name,
+  location: t.location,
+  digest: t.digest,
+  total_size: t.total_size,
+  created_at: t.created_at,
+});
+
 const json = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
 });
@@ -192,6 +209,51 @@ export function registerTools(server: McpServer, gl: GitLabClient) {
       if (!include_log) return job;
       const log = tail(cleanLog(await gl.getText(`${base}/trace`)), log_tail_lines);
       return { ...job, log };
+    }),
+  );
+
+  server.registerTool(
+    "list_registry_repositories",
+    {
+      title: "List container registry repositories",
+      description:
+        "List the Docker image repositories of a project's container registry, with their tag count. Use the returned id with list_registry_tags.",
+      inputSchema: { project, page, per_page: perPage },
+      annotations: { readOnlyHint: true },
+    },
+    safe(async ({ project, page, per_page }) => {
+      const res = await gl.getPage<any>(`${projectPath(project)}/registry/repositories`, {
+        tags_count: true,
+        page,
+        per_page,
+      });
+      return { ...res, items: res.items.map(slimRepository) };
+    }),
+  );
+
+  server.registerTool(
+    "list_registry_tags",
+    {
+      title: "List image tags",
+      description:
+        "List the tags of a container registry repository. Set include_details=true to get digest, size and creation date of each tag (one extra request per tag).",
+      inputSchema: {
+        project,
+        repository_id: z.number().int().describe("Repository ID from list_registry_repositories"),
+        include_details: z.boolean().default(false),
+        page,
+        per_page: perPage,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    safe(async ({ project, repository_id, include_details, page, per_page }) => {
+      const base = `${projectPath(project)}/registry/repositories/${repository_id}/tags`;
+      const res = await gl.getPage<any>(base, { page, per_page });
+      if (!include_details) return { ...res, items: res.items.map((t) => ({ name: t.name, location: t.location })) };
+      const items = await Promise.all(
+        res.items.map((t) => gl.get<any>(`${base}/${encodeURIComponent(t.name)}`).then(slimTag)),
+      );
+      return { ...res, items };
     }),
   );
 }

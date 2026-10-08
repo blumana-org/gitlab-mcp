@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { describeToken, protectedResourceMetadata, type OidcConfig, type TokenVerifier } from "./auth.ts";
+import { AuthUnavailableError, protectedResourceMetadata, type AuthProvider } from "./auth.ts";
 import type { GitLabClient } from "./gitlab.ts";
 import { createMcpServer } from "./server.ts";
 
@@ -8,11 +8,12 @@ export interface HttpOptions {
   port: number;
   /** Public base URL of this server, e.g. https://gitlab-mcp.example.com */
   publicUrl: string;
+  /** With GitLab OAuth auth, carries no token: each request calls GitLab as its caller. */
   gitlab: GitLabClient;
   /** Log every auth decision, not only rejections. */
   debug?: boolean;
   /** null = authentication disabled (dev only). */
-  auth: { config: OidcConfig; verify: TokenVerifier } | null;
+  auth: AuthProvider | null;
 }
 
 const PRM_PATH = "/.well-known/oauth-protected-resource";
@@ -22,6 +23,7 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
   const resource = `${base}/mcp`;
   const metadataUrl = `${base}${PRM_PATH}/mcp`;
 
+  const scope = auth?.scopes.length ? `, scope="${auth.scopes.join(" ")}"` : "";
   const unauthorized = (error: string, description: string) => {
     description = description.replace(/["\\\r\n]/g, "'");
     return Response.json(
@@ -29,7 +31,7 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
       {
         status: 401,
         headers: {
-          "WWW-Authenticate": `Bearer error="${error}", error_description="${description}", resource_metadata="${metadataUrl}"`,
+          "WWW-Authenticate": `Bearer error="${error}", error_description="${description}", resource_metadata="${metadataUrl}"${scope}`,
         },
       },
     );
@@ -49,13 +51,15 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
       return info;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      if (err instanceof AuthUnavailableError) {
+        // Not the token's fault: a 401 would make the client throw away a valid login.
+        console.error(`[auth] cannot validate token: ${reason}`);
+        return Response.json({ error: "temporarily_unavailable", error_description: reason }, { status: 503 });
+      }
       // Expected values vs what the token carries: that's what you need to fix a mismatch.
       console.error(
         `[auth] token rejected: ${reason}`,
-        JSON.stringify({
-          expected: { iss: auth.config.issuer, aud: auth.config.audience, azp: auth.config.clientId },
-          got: describeToken(match[1]!),
-        }),
+        JSON.stringify({ expected: auth.expected, got: auth.describe(match[1]!) }),
       );
       return unauthorized("invalid_token", `Token rejected: ${reason}`);
     }
@@ -77,8 +81,10 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
     const authInfo = await authenticate(req);
     if (authInfo instanceof Response) return authInfo;
 
+    // GitLab login: the user's own token, validated as issued to our GitLab app, so GitLab enforces their permissions.
+    const gl = auth?.kind === "gitlab" && authInfo ? gitlab.asUser(authInfo.token) : gitlab;
     // Stateless: one server + transport per request, so any replica can serve any call.
-    const server = createMcpServer(gitlab);
+    const server = createMcpServer(gl);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -93,7 +99,7 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
 
   const prm = (req: Request) => {
     if (debug) console.error(`[auth] metadata requested: ${new URL(req.url).pathname}`);
-    return auth ? Response.json(protectedResourceMetadata(auth.config, resource)) : new Response("Not found", { status: 404 });
+    return auth ? Response.json(protectedResourceMetadata(auth, resource)) : new Response("Not found", { status: 404 });
   };
 
   return Bun.serve({

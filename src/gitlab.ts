@@ -26,21 +26,34 @@ export class GitLabError extends Error {
 
 export type Query = Record<string, string | number | boolean | string[] | undefined>;
 
+/** A string is a PAT (`PRIVATE-TOKEN`); `{ bearer }` is a user's OAuth token; null = no credentials. */
+export type GitLabCredentials = string | { bearer: string } | null;
+
 export class GitLabClient {
   private apiBase: string;
+  private authHeaders: Record<string, string>;
 
   constructor(
-    baseUrl: string,
-    private token: string,
+    private baseUrl: string,
+    credentials: GitLabCredentials,
     private timeoutMs = 20_000,
   ) {
     this.apiBase = `${baseUrl.replace(/\/+$/, "")}/api/v4`;
+    if (typeof credentials === "string") this.authHeaders = { "PRIVATE-TOKEN": credentials };
+    else if (credentials) this.authHeaders = { Authorization: `Bearer ${credentials.bearer}` };
+    else this.authHeaders = {};
   }
 
-  static fromEnv(env = process.env): GitLabClient {
-    const token = env.GITLAB_TOKEN;
-    if (!token) throw new Error("GITLAB_TOKEN is required");
-    return new GitLabClient(env.GITLAB_URL ?? "https://gitlab.com", token, Number(env.GITLAB_TIMEOUT_MS ?? 20_000));
+  /** `requireToken: false` when GitLab calls use each user's OAuth token instead of GITLAB_TOKEN. */
+  static fromEnv(env = process.env, { requireToken = true } = {}): GitLabClient {
+    const token = requireToken ? env.GITLAB_TOKEN : null;
+    if (requireToken && !token) throw new Error("GITLAB_TOKEN is required");
+    return new GitLabClient(env.GITLAB_URL ?? "https://gitlab.com", token ?? null, Number(env.GITLAB_TIMEOUT_MS ?? 20_000));
+  }
+
+  /** Same instance and timeout, acting as the user who owns this OAuth access token. */
+  asUser(oauthToken: string): GitLabClient {
+    return new GitLabClient(this.baseUrl, { bearer: oauthToken }, this.timeoutMs);
   }
 
   private url(path: string, query: Query = {}): string {
@@ -59,7 +72,7 @@ export class GitLabClient {
     let res: Response;
     try {
       res = await fetch(url, {
-        headers: { "PRIVATE-TOKEN": this.token },
+        headers: this.authHeaders,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {

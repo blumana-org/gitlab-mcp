@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { createTokenVerifier, oidcConfigFromEnv, type OidcConfig } from "./auth.ts";
+import { createTokenVerifier, oidcConfigFromEnv, oidcProvider, type OidcConfig } from "./auth.ts";
 import { GitLabClient } from "./gitlab.ts";
 import { startHttpServer } from "./http.ts";
 
@@ -30,7 +30,7 @@ beforeAll(async () => {
     port: 0,
     publicUrl: "https://mcp.example.com",
     gitlab: new GitLabClient("https://gitlab.invalid", "t"),
-    auth: { config, verify: createTokenVerifier(config) },
+    auth: oidcProvider(config),
   });
 });
 

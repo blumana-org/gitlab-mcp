@@ -102,7 +102,15 @@ test("config defaults: GitLab is the issuer, read_api is required", () => {
 
 test("metadata sends clients to GitLab, 401 asks for read_api", async () => {
   const prm = await fetch(new URL("/.well-known/oauth-protected-resource/mcp", mcp.url));
-  expect(await prm.json()).toMatchObject({ authorization_servers: [gitlab.url.origin], scopes_supported: ["read_api"] });
+  expect(await prm.json()).toMatchObject({ authorization_servers: ["https://mcp.example.com"], scopes_supported: ["read_api"] });
+  // The shim mirrors GitLab's metadata and hands out our GitLab application, never a dynamically registered one.
+  const meta = (await (await fetch(new URL("/.well-known/oauth-authorization-server", mcp.url))).json()) as any;
+  expect(meta).toMatchObject({ issuer: gitlab.url.origin, registration_endpoint: "https://mcp.example.com/oauth/register" });
+  const reg = await fetch(new URL("/oauth/register", mcp.url), {
+    method: "POST",
+    body: JSON.stringify({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
+  });
+  expect(((await reg.json()) as any).client_id).toBe(APP_ID);
   const res = await searchProjects();
   expect(res.status).toBe(401);
   expect(res.headers.get("www-authenticate")).toContain('scope="read_api"');

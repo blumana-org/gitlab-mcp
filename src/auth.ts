@@ -21,8 +21,12 @@ export type TokenVerifier = (token: string) => Promise<AuthInfo>;
 export interface AuthProvider {
   /** `gitlab`: tokens are GitLab OAuth tokens, and GitLab is called with the caller's own token. */
   kind: "oidc" | "gitlab";
-  /** Authorization server advertised in the RFC 9728 metadata. */
+  /** The real authorization server (the `iss` of its tokens). */
   issuer: string;
+  /** Its discovery document, mirrored by the DCR shim. */
+  discoveryUrl: string;
+  /** Pre-registered public client the DCR shim hands out; undefined = no shim possible. */
+  publicClientId?: string;
   /** Scopes advertised to MCP clients (they request these from the authorization server). */
   scopes: string[];
   verify: TokenVerifier;
@@ -93,6 +97,8 @@ export function oidcProvider(config: OidcConfig): AuthProvider {
   return {
     kind: "oidc",
     issuer: config.issuer,
+    discoveryUrl: `${config.issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`,
+    publicClientId: config.clientId,
     scopes: config.scopes,
     verify: createTokenVerifier(config),
     expected: { iss: config.issuer, aud: config.audience, azp: config.clientId },
@@ -100,11 +106,14 @@ export function oidcProvider(config: OidcConfig): AuthProvider {
   };
 }
 
-/** RFC 9728 Protected Resource Metadata: tells MCP clients which authorization server to log in with. */
-export function protectedResourceMetadata(auth: Pick<AuthProvider, "issuer" | "scopes">, resource: string) {
+/**
+ * RFC 9728 Protected Resource Metadata: tells MCP clients which authorization server to log in with.
+ * With the DCR shim it is this server, so clients read the mirrored metadata and its registration endpoint.
+ */
+export function protectedResourceMetadata(auth: Pick<AuthProvider, "issuer" | "scopes">, resource: string, authorizationServer = auth.issuer) {
   return {
     resource,
-    authorization_servers: [auth.issuer],
+    authorization_servers: [authorizationServer],
     scopes_supported: auth.scopes,
     bearer_methods_supported: ["header"],
     resource_name: "DevOps MCP",

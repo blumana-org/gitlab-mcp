@@ -111,7 +111,10 @@ for (const url of candidates) {
   console.log(`  · ${url} -> HTTP ${res.status}`);
 }
 if (!as) fail("no metadata found: the IdP must expose OAuth or OIDC discovery for this issuer");
-if (as.issuer !== issuer) warn(`metadata issuer "${as.issuer}" != "${issuer}" -> OIDC_ISSUER / GITLAB_OAUTH_ISSUER must match it exactly`);
+// DCR shim: the MCP server mirrors the IdP's metadata, so the issuer is the IdP's, not the server's.
+const viaShim = iss.origin === new URL(mcpUrl).origin;
+if (viaShim) ok(`metadata mirrored by the MCP server (DCR shim), real issuer = ${as.issuer}`);
+else if (as.issuer !== issuer) warn(`metadata issuer "${as.issuer}" != "${issuer}" -> OIDC_ISSUER / GITLAB_OAUTH_ISSUER must match it exactly`);
 else ok("issuer matches");
 for (const k of ["authorization_endpoint", "token_endpoint"]) {
   if (!as[k]) fail(`missing ${k}`);
@@ -122,9 +125,24 @@ const methods: string[] = as.code_challenge_methods_supported ?? [];
 if (!methods.includes("S256")) {
   warn(`code_challenge_methods_supported = ${JSON.stringify(methods)}: MCP clients refuse an IdP that does not advertise S256 (PKCE)`);
 } else ok("PKCE S256 supported");
+if (as.registration_endpoint && !viaShim) {
+  // Not called: on a real IdP it would create a client. That is what Claude does, and it fails the azp / application check.
+  warn(`IdP registration endpoint (${as.registration_endpoint}): Claude would register a NEW client whose tokens this server rejects -> enable the DCR shim (OIDC_CLIENT_ID set, MCP_DCR_SHIM not false) or enter the client id by hand`);
+} else if (as.registration_endpoint) {
+  // Register like Claude does: harmless on the shim, it creates nothing.
+  const res = await fetch(as.registration_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "devops-mcp doctor", redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }),
+  }).catch((err) => err as Error);
+  if (res instanceof Error) warn(`registration endpoint unreachable: ${res.message}`);
+  else {
+    const body = (await res.json().catch(() => ({}))) as { client_id?: string; error_description?: string };
+    if (!res.ok) warn(`registration refused (HTTP ${res.status}: ${body.error_description ?? "no detail"}) -> Claude needs the client id entered by hand`);
+    else ok(`registration (DCR shim) returns client_id = ${body.client_id}`);
+  }
+} else warn("no registration_endpoint: Claude needs the client id entered by hand (pre-registered public client)");
 if (!values["client-id"]) {
-  if (as.registration_endpoint) ok(`dynamic client registration available (${as.registration_endpoint})`);
-  else warn("no registration_endpoint: Claude Code needs --client-id (pre-registered public client)");
   step("Done (pass --client-id to also test a real login)");
   process.exit(0);
 }

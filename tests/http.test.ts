@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createTokenVerifier, oidcConfigFromEnv, oidcProvider, type OidcConfig } from "../src/auth.ts";
 import { GitLabClient } from "../src/gitlab.ts";
+import { redirectAllowed } from "../src/dcr-shim.ts";
 import { startHttpServer } from "../src/http.ts";
 import { VictoriaLogsClient } from "../src/victorialogs.ts";
 import { VictoriaMetricsClient } from "../src/victoriametrics.ts";
@@ -87,12 +88,75 @@ const rpc = (method: string, params: unknown, token?: string) =>
   });
 const listTools = (token?: string) => rpc("tools/list", {}, token);
 
-test("serves protected resource metadata", async () => {
+test("serves protected resource metadata, pointing to the DCR shim", async () => {
   const res = await fetch(new URL("/.well-known/oauth-protected-resource/mcp", mcp.url));
   expect(await res.json()).toMatchObject({
     resource: "https://mcp.example.com/mcp",
-    authorization_servers: [issuer],
+    authorization_servers: ["https://mcp.example.com"],
   });
+});
+
+test("DCR shim: mirrors the IdP metadata with our registration endpoint", async () => {
+  for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]) {
+    const body = (await (await fetch(new URL(path, mcp.url))).json()) as any;
+    // issuer and endpoints stay the IdP's: tokens are still minted and checked there.
+    expect(body).toMatchObject({
+      issuer,
+      jwks_uri: `${issuer}/jwks`,
+      registration_endpoint: "https://mcp.example.com/oauth/register",
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+    });
+  }
+});
+
+const register = (body: unknown) =>
+  fetch(new URL("/oauth/register", mcp.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+
+test("DCR shim: every registration gets the pre-registered client id", async () => {
+  const res = await register({
+    client_name: "Claude",
+    redirect_uris: ["https://claude.ai/api/mcp/auth_callback", "https://evil.example.com/cb"],
+  });
+  expect(res.status).toBe(201);
+  expect(await res.json()).toEqual({
+    client_id: CLIENT_ID,
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+    client_name: "Claude",
+  });
+  expect((await register({ redirect_uris: ["http://localhost:33418/callback"] })).status).toBe(201);
+});
+
+test("DCR shim: refuses unknown redirect URIs and malformed requests", async () => {
+  const res = await register({ redirect_uris: ["https://evil.example.com/cb"] });
+  expect(res.status).toBe(400);
+  expect(await res.json()).toMatchObject({ error: "invalid_redirect_uri" });
+  expect((await register("not json")).status).toBe(400);
+  expect((await register("x".repeat(20_000))).status).toBe(413);
+});
+
+test("DCR shim can be disabled: clients are sent to the IdP directly", async () => {
+  const plain = startHttpServer({
+    port: 0,
+    publicUrl: "https://mcp.example.com",
+    gitlab: new GitLabClient(upstream.url.origin, "server-pat"),
+    auth: oidcProvider({ issuer, clientId: CLIENT_ID, scopes: [] }),
+    dcrShim: false,
+  });
+  try {
+    const prm = (await (await fetch(new URL("/.well-known/oauth-protected-resource/mcp", plain.url))).json()) as any;
+    expect(prm.authorization_servers).toEqual([issuer]);
+    expect((await fetch(new URL("/oauth/register", plain.url), { method: "POST", body: "{}" })).status).toBe(404);
+  } finally {
+    plain.stop(true);
+  }
 });
 
 test("rejects requests without token, pointing to metadata", async () => {
@@ -150,4 +214,15 @@ test("OIDC: the user's token goes to Victoria* only, GitLab keeps the server PAT
   const pipeline = (await (await rpc("tools/call", { name: "get_pipeline", arguments: { project: 1, pipeline_id: 2 } }, token)).json()) as any;
   expect(pipeline.result.isError).toBeFalsy();
   expect(received.gitlab.at(-1)).toEqual({ token: "server-pat", authorization: null });
+});
+
+test("redirect allowlist patterns", () => {
+  const allow = ["http://localhost:*", "https://claude.ai/api/mcp/auth_callback", "https://inspector.example/*"];
+  expect(redirectAllowed(allow, "http://localhost:8765/callback")).toBe(true);
+  expect(redirectAllowed(allow, "http://localhost:8765")).toBe(true);
+  expect(redirectAllowed(allow, "http://localhost.evil.com/cb")).toBe(false);
+  expect(redirectAllowed(allow, "http://localhost:80evil/cb")).toBe(false);
+  expect(redirectAllowed(allow, "https://claude.ai/api/mcp/auth_callback")).toBe(true);
+  expect(redirectAllowed(allow, "https://claude.ai/api/mcp/auth_callback/x")).toBe(false);
+  expect(redirectAllowed(allow, "https://inspector.example/oauth")).toBe(true);
 });

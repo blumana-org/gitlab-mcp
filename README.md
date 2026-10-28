@@ -62,6 +62,8 @@ Voir [`.env.example`](.env.example).
 | `OIDC_SCOPES`       | http  | `openid profile email`   | Scopes annoncés au client MCP |
 | `OIDC_JWKS_URI`     | http  | découvert                | Override de l'URI JWKS |
 | `MCP_AUTH_DISABLED` | http  | `false`                  | `true` = pas d'auth (dev local uniquement) |
+| `MCP_DCR_SHIM`      | http  | `true`                   | `false` = désactive le shim d'enregistrement de client (voir « Client ID automatique ») |
+| `MCP_REDIRECT_URIS` | http  | localhost + Claude       | Redirect URIs acceptées par le shim (exact, `*` final, ou `:*` = tout port) |
 | `MCP_DEBUG`         | http  | `false`                  | `true` = log chaque étape d'auth (pas seulement les rejets) |
 
 ## Usage local (stdio)
@@ -84,6 +86,7 @@ L'image est construite par GitHub Actions (`.github/workflows/build.yml`) et pou
 - Endpoint MCP : `POST $MCP_PUBLIC_URL/mcp` (Streamable HTTP, stateless → scalable horizontalement)
 - Healthcheck : `GET /health`
 - Métadonnées OAuth : `GET /.well-known/oauth-protected-resource[/mcp]`
+- Shim DCR (si client public configuré) : `GET /.well-known/oauth-authorization-server[/mcp]`, `GET /.well-known/openid-configuration`, `POST /oauth/register`
 - À mettre derrière un reverse proxy TLS ; `MCP_PUBLIC_URL` doit être l'URL HTTPS publique.
 
 ### Login GitLab (recommandé)
@@ -98,11 +101,10 @@ Côté GitLab (*Admin → Applications*, ou au niveau d'un groupe/utilisateur) :
 - Redirect URIs (une par ligne) : `http://localhost:<port>/callback` pour Claude Code / le doctor, `https://claude.ai/api/mcp/auth_callback` pour claude.ai
 - `GITLAB_OAUTH_CLIENT_ID` = l'*Application ID*
 
-Le client MCP **doit** utiliser cet Application ID (`--client-id`) : GitLab propose aussi l'enregistrement dynamique de clients, mais un client enregistré dynamiquement a un autre ID et ses tokens sont refusés.
+Le client MCP **doit** utiliser cet Application ID : un client enregistré dynamiquement chez GitLab a un autre ID et ses tokens sont refusés. Le shim DCR (ci-dessous) s'en charge : rien à saisir côté client.
 
 ```sh
-claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp \
-  --client-id <application-id> --callback-port 8765
+claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp --callback-port 8765
 ```
 
 Les access tokens GitLab expirent au bout de 2 h ; le client MCP les rafraîchit avec le refresh token.
@@ -125,14 +127,25 @@ Créer un **client public** (pas de secret, PKCE S256) :
 - Les access tokens doivent être des **JWT** (Keycloak, Okta, Entra ID, Auth0… oui ; les access tokens Google sont opaques et ne sont pas supportés).
 - Keycloak : `azp` vaut le client ID par défaut → `OIDC_CLIENT_ID` suffit. Pour vérifier `aud`, ajouter un *audience mapper* et définir `OIDC_AUDIENCE`.
 
-### Ajout à Claude Code
+### Client ID automatique (shim DCR)
+
+Sans client ID saisi, Claude (Desktop, claude.ai, Code) fait de l'*enregistrement dynamique* (RFC 7591) auprès de l'authorization server annoncé. Keycloak crée alors un client au nom aléatoire (ou refuse, politique *Trusted Hosts*), GitLab une application non vérifiée : dans les deux cas le token est rejeté par le contrôle `azp` / application.
+
+Le serveur répond donc lui-même à l'enregistrement (même design que r2e-mcp) :
+
+- les métadonnées de ressource annoncent **le serveur MCP** comme authorization server ;
+- `/.well-known/oauth-authorization-server` renvoie une copie des métadonnées de l'IdP (`issuer`, endpoints d'autorisation et de token inchangés : les tokens viennent toujours de l'IdP), avec `registration_endpoint` = `/oauth/register` ;
+- `POST /oauth/register` renvoie toujours le client public pré-enregistré (`OIDC_CLIENT_ID` ou `GITLAB_OAUTH_CLIENT_ID`), sans secret. Rien n'est créé chez l'IdP ; seules les redirect URIs de `MCP_REDIRECT_URIS` sont acceptées (par défaut `http://localhost:*`, `http://127.0.0.1:*` et les callbacks claude.ai / claude.com), et elles doivent aussi être autorisées sur le client côté IdP.
+
+Actif dès qu'un client public est configuré (en OIDC il faut `OIDC_CLIENT_ID` : avec seulement `OIDC_AUDIENCE`, pas de shim). `MCP_DCR_SHIM=false` revient à annoncer directement l'IdP ; il faut alors saisir le client ID à la main.
+
+### Ajout à Claude Code / Claude Desktop
 
 ```sh
-claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp \
-  --client-id gitlab-mcp --callback-port 8765
+claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp --callback-port 8765
 ```
 
-Puis `/mcp` dans Claude Code → *Authenticate* : le navigateur s'ouvre sur le SSO.
+Puis `/mcp` dans Claude Code → *Authenticate* : le navigateur s'ouvre sur le SSO. Claude Desktop / claude.ai : *Settings → Connectors → Add custom connector* avec l'URL `/mcp`, sans client ID.
 
 ### VictoriaLogs / VictoriaMetrics derrière oauth2-proxy
 
@@ -173,7 +186,8 @@ Causes fréquentes :
 | L'échange de code demande un secret | Le client n'est pas configuré en *public* |
 | `Token was not issued to client` / `unexpected "aud"` | `OIDC_CLIENT_ID` / `OIDC_AUDIENCE` ne correspondent pas aux claims (voir le log serveur) |
 | `not a JWT (opaque token?)` | L'IdP émet des access tokens opaques : non supporté |
-| `Token was not issued to GitLab application` | Login GitLab : le client a fait de l'enregistrement dynamique → lui passer `--client-id` |
+| `Token was not issued to client` / `to GitLab application` avec un ID aléatoire | Le client a fait de l'enregistrement dynamique chez l'IdP : shim désactivé (`MCP_DCR_SHIM`) ou absent (`OIDC_CLIENT_ID` manquant), ou client configuré avant le shim → le supprimer et le recréer |
+| `invalid_redirect_uri` sur `/oauth/register` | Redirect URI du client absente de `MCP_REDIRECT_URIS` |
 | `GitLab advertises issuer ...` (au boot) | Login GitLab : `GITLAB_URL` diffère de l'URL publique de GitLab → `GITLAB_OAUTH_ISSUER` |
 | `503 temporarily_unavailable` | Login GitLab : GitLab injoignable pour valider le token |
 

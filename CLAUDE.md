@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Serveur MCP GitLab en TypeScript, exécuté par Bun. Lecture seule. But : aider Claude Code à débugger les pipelines CI. En stdio, GitLab est appelé avec un PAT. En HTTP, deux modes d'auth exclusifs : **login GitLab** (`GITLAB_OAUTH_CLIENT_ID` : GitLab est l'authorization server, les outils appellent GitLab avec le token de l'utilisateur) ou **SSO OIDC** (`OIDC_ISSUER` : JWT de l'IdP, GitLab appelé avec le PAT serveur).
+Serveur MCP « devops » (nom MCP `devops-mcp` ; repo, package et image restent `gitlab-mcp`) en TypeScript, exécuté par Bun. Lecture seule. But : aider Claude Code à débugger les pipelines CI (GitLab) et à lire les logs et métriques applicatifs (VictoriaLogs / VictoriaMetrics, optionnels : activés si `VICTORIALOGS_URL` / `VICTORIAMETRICS_URL`). En stdio, GitLab est appelé avec un PAT. En HTTP, deux modes d'auth exclusifs : **login GitLab** (`GITLAB_OAUTH_CLIENT_ID` : GitLab est l'authorization server, les outils appellent GitLab avec le token de l'utilisateur) ou **SSO OIDC** (`OIDC_ISSUER` : JWT de l'IdP, GitLab appelé avec le PAT serveur).
 
 ## Commandes
 
@@ -25,17 +25,23 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - `src/auth.ts` — interface `AuthProvider` (commune aux deux modes), config OIDC, vérification JWT (`jose`, JWKS découvert), métadonnées de ressource protégée
 - `src/gitlab-oauth.ts` — login GitLab : validation des tokens via `/oauth/token/info` (+ cache), check de l'issuer au boot
 - `src/gitlab.ts` — client REST v4 minimal (`fetch` + `PRIVATE-TOKEN` ou `Bearer` via `asUser()`), pagination via headers `x-*`, helpers de log (`cleanLog`, `tail`)
-- `src/tools.ts` — déclaration des outils MCP (`registerTool` + schémas zod) et projections « slim »
-- `tests/*.test.ts` — tests (séparés de `src/`, importent depuis `../src/`) ; `tools.test.ts` appelle les outils via un client MCP en mémoire (`InMemoryTransport`) avec `fetch` mocké ; `http.test.ts` simule un IdP (JWKS local) et `gitlab-oauth.test.ts` un GitLab (`/oauth/token/info`) pour tester les flux d'auth de bout en bout
+- `src/tools.ts` — outils GitLab (`registerTool` + schémas zod) et projections « slim »
+- `src/victoria.ts` — base commune `VictoriaHttpClient` (POST form-encoded, `Bearer` optionnel, `redirect: "manual"`, erreurs oauth2-proxy explicites sur 3xx/401/403, extraction du champ `error`), lecture des env `<PREFIX>_URL/_TOKEN/_TIMEOUT_MS`, parsing des temps (`parseTime` : `now`, `-12h`/`12h` = passé, `+1h`, epoch, RFC3339) et des steps
+- `src/victorialogs.ts` — client VictoriaLogs (API LogsQL `/select/logsql/*`, NDJSON tolérant aux lignes tronquées, `asUser()`)
+- `src/victoriametrics.ts` — client VictoriaMetrics (API Prometheus `/api/v1/*`, déballe `{status, data}`, `asUser()`)
+- `src/victoria-format.ts` — rendu texte compact des résultats logs/métriques (adapté de Plawn/victoriametrics-mcp)
+- `src/tools-victorialogs.ts` / `src/tools-victoriametrics.ts` — outils correspondants, enregistrés seulement si le client est configuré
+- `src/tool-utils.ts` — `safe()` / `json()` partagés par les fichiers d'outils (une string est renvoyée telle quelle)
+- `tests/*.test.ts` — tests (séparés de `src/`, importent depuis `../src/`) ; `tools.test.ts` appelle les outils via un client MCP en mémoire (`InMemoryTransport`) avec `fetch` mocké ; `http.test.ts` simule un IdP (JWKS local) et `gitlab-oauth.test.ts` un GitLab (`/oauth/token/info`) pour tester les flux d'auth de bout en bout, y compris quel token part vers GitLab / VictoriaLogs / VictoriaMetrics
 
 ## Conventions
 
 - **stdout est le canal MCP** : ne jamais `console.log` ; logs sur `console.error`.
 - Les outils restent **read-only** (`readOnlyHint: true`). Toute action d'écriture (retry, cancel…) doit être un choix explicite et nécessitera le scope `api`.
-- Les réponses sont du JSON texte. Les listes passent par des projections `slim*` pour économiser des tokens ; les `get_*` renvoient l'objet GitLab complet.
+- Les réponses GitLab sont du JSON texte ; les outils Victoria* renvoient du texte compact (`victoria-format.ts`), troncature toujours annoncée. Les listes passent par des projections `slim*` pour économiser des tokens ; les `get_*` renvoient l'objet GitLab complet.
 - Paginer via `GitLabClient.getPage` et renvoyer `{ items, pagination }`.
 - Les paramètres tableau sont sérialisés au format Rails (`scope[]=a&scope[]=b`) par le client.
-- Encapsuler les handlers avec `safe(name, fn)` (log une ligne `[tool]` par appel) pour renvoyer les erreurs GitLab en `isError` plutôt que de crasher.
+- Encapsuler les handlers avec `safe(name, fn)` (log une ligne `[tool]` par appel) pour renvoyer les erreurs GitLab / Victoria* en `isError` plutôt que de crasher.
 - `project` = ID ou chemin complet, toujours passé par `projectPath()` (URL-encodé).
 
 ## Auth (mode HTTP)
@@ -45,12 +51,13 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - Login GitLab : tokens opaques, validés par `/oauth/token/info`. Le check `application.uid == GITLAB_OAUTH_CLIENT_ID` est **indispensable** : c'est lui qui empêche d'accepter un PAT ou le token d'une autre app (et des clients enregistrés dynamiquement). GitLab injoignable pendant la validation = 503 (`AuthUnavailableError`), jamais 401.
 - Logs toujours actifs : check GitLab au boot, une ligne `[http]` par requête `/mcp`, une ligne `[tool]` par appel. Les appels GitLab ont un timeout (`GITLAB_TIMEOUT_MS`).
 - Les rejets sont toujours loggés (raison + claims attendus/reçus, jamais le token) ; `MCP_DEBUG=true` logue aussi les succès.
-- Token utilisateur vers GitLab : **uniquement** en login GitLab, après validation de l'application (`gitlab.asUser`). En mode OIDC, ne jamais transmettre le token de l'IdP ; GitLab utilise `GITLAB_TOKEN`. En login GitLab, `GITLAB_TOKEN` est ignoré.
+- Token utilisateur vers GitLab : **uniquement** en login GitLab, après validation de l'application (`gitlab.asUser`). En mode OIDC, ne jamais transmettre le token de l'IdP à GitLab ; GitLab utilise `GITLAB_TOKEN`. En login GitLab, `GITLAB_TOKEN` est ignoré.
+- Token utilisateur vers VictoriaLogs / VictoriaMetrics : **uniquement** en OIDC, après vérification locale du JWT (`asUser` dans `http.ts`), et uniquement vers `VICTORIALOGS_URL` / `VICTORIAMETRICS_URL` (oauth2-proxy du même realm). Les `*_TOKEN` sont alors ignorés. En login GitLab / sans auth : `VICTORIALOGS_TOKEN` / `VICTORIAMETRICS_TOKEN` ou rien, jamais le token GitLab de l'utilisateur.
 - Le `AuthInfo` validé est passé à `transport.handleRequest(req, { authInfo })` et accessible dans les handlers via `extra.authInfo`.
 
 ## Ajouter un outil
 
-1. Endpoint dans la doc API GitLab v4.
-2. `server.registerTool(...)` dans `src/tools.ts` avec un schéma zod décrit (les descriptions sont lues par le modèle).
-3. Test du comportement client si nouvelle logique dans `gitlab.ts`.
+1. Endpoint dans la doc API GitLab v4 (ou API HTTP VictoriaLogs / Prometheus de VictoriaMetrics).
+2. `server.registerTool(...)` dans `src/tools.ts` (ou `src/tools-victorialogs.ts` / `src/tools-victoriametrics.ts`) avec un schéma zod décrit (les descriptions sont lues par le modèle).
+3. Test du comportement client si nouvelle logique dans `gitlab.ts` / `victoria*.ts`.
 4. Mettre à jour le tableau des outils du README.

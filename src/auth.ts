@@ -107,7 +107,7 @@ export function protectedResourceMetadata(auth: Pick<AuthProvider, "issuer" | "s
     authorization_servers: [auth.issuer],
     scopes_supported: auth.scopes,
     bearer_methods_supported: ["header"],
-    resource_name: "GitLab MCP",
+    resource_name: "DevOps MCP",
   };
 }
 

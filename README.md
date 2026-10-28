@@ -1,7 +1,7 @@
 # gitlab-mcp
 
-Serveur MCP minimaliste (TypeScript + Bun) pour GitLab.
-Objectif : permettre à Claude Code d'inspecter et de débugger les pipelines CI.
+Serveur MCP minimaliste (TypeScript + Bun) pour le debug « devops » : GitLab CI + logs VictoriaLogs + métriques VictoriaMetrics (nom MCP : `devops-mcp`).
+Objectif : permettre à Claude Code d'inspecter et de débugger les pipelines CI, puis de corréler avec les logs et métriques applicatifs.
 
 - Deux modes : **stdio** (local, PAT) ou **HTTP** (déployé, Docker), avec au choix :
   - **login GitLab** (recommandé) : les utilisateurs se connectent avec leur compte GitLab et les outils appellent GitLab **avec leur propre token** → chacun ne voit que ce que ses droits GitLab permettent, audit GitLab nominatif, aucun PAT côté serveur ;
@@ -18,6 +18,19 @@ Objectif : permettre à Claude Code d'inspecter et de débugger les pipelines CI
 | `get_job`         | Détail d'un job ; `include_log: true` ajoute la fin du log (ANSI nettoyé, `log_tail_lines` = 200 par défaut) |
 | `list_registry_repositories` | Images Docker du registry du projet, avec leur nombre de tags (paginé) |
 | `list_registry_tags` | Tags d'une image ; `include_details: true` ajoute digest, taille et date (paginé) |
+| `query_logs`      | VictoriaLogs : logs d'une requête LogsQL, une ligne par entrée, plus récents d'abord (`start` = `-1h`, `limit` = 100, message tronqué à `max_message_chars`) |
+| `log_hits`        | VictoriaLogs : nombre de logs par intervalle (`step`), groupable par champ (`field`) → quand une erreur a commencé |
+| `list_log_fields` | VictoriaLogs : champs présents dans les logs d'une requête |
+| `list_log_field_values` | VictoriaLogs : valeurs distinctes d'un champ (apps, pods, niveaux…) |
+| `query_metrics`   | VictoriaMetrics : requête PromQL/MetricsQL instantanée, une valeur par série |
+| `query_metrics_range` | VictoriaMetrics : requête sur une plage (`start` = `-1h`) : min/max/moy/dernière valeur + points échantillonnés |
+| `list_metric_series` | VictoriaMetrics : séries correspondant à des sélecteurs (`match`) |
+| `list_metric_label_values` | VictoriaMetrics : valeurs d'un label (`__name__` = noms de métriques) |
+| `list_scrape_targets` | VictoriaMetrics : santé des cibles de scrape (`only_unhealthy`) |
+
+Les outils VictoriaLogs n'apparaissent que si `VICTORIALOGS_URL` est défini, ceux de VictoriaMetrics que si `VICTORIAMETRICS_URL` l'est.
+Ils répondent en texte compact (une ligne par entrée / série, ANSI et champs Docker retirés, troncature toujours signalée) plutôt qu'en JSON.
+Les paramètres de temps (`start`, `end`, `time`) acceptent `now`, une durée dans le passé (`-12h` ou `12h`, `+1h` pour le futur), un epoch en secondes ou une date RFC3339.
 
 Le paramètre `project` accepte un ID numérique ou un chemin complet (`group/sub/project`).
 Les outils paginés renvoient `{ items, pagination: { page, per_page, next_page, prev_page, total, total_pages } }`.
@@ -34,6 +47,12 @@ Voir [`.env.example`](.env.example).
 | `GITLAB_OAUTH_SCOPES` | http | `read_api`             | Scopes annoncés ; le token doit tous les porter |
 | `GITLAB_OAUTH_ISSUER` | http | `GITLAB_URL`           | URL publique de GitLab si `GITLAB_URL` est une adresse interne |
 | `GITLAB_TIMEOUT_MS` | tous  | `20000`                  | Timeout des appels GitLab |
+| `VICTORIALOGS_URL`  | tous  | —                        | Active les outils logs : URL de VictoriaLogs (ou de l'oauth2-proxy devant) |
+| `VICTORIALOGS_TOKEN` | stdio, http hors OIDC | — | Bearer statique (ignoré en OIDC : le token de l'utilisateur est transmis) |
+| `VICTORIALOGS_TIMEOUT_MS` | tous | `GITLAB_TIMEOUT_MS` | Timeout des appels VictoriaLogs |
+| `VICTORIAMETRICS_URL` | tous | —                       | Active les outils métriques : URL de VictoriaMetrics / vmselect (ou de l'oauth2-proxy devant) |
+| `VICTORIAMETRICS_TOKEN` | stdio, http hors OIDC | — | Bearer statique (ignoré en OIDC) |
+| `VICTORIAMETRICS_TIMEOUT_MS` | tous | `GITLAB_TIMEOUT_MS` | Timeout des appels VictoriaMetrics |
 | `MCP_TRANSPORT`     | tous  | `stdio` (`http` en Docker) | `stdio` ou `http` |
 | `PORT`              | http  | `3000`                   | Port d'écoute |
 | `MCP_PUBLIC_URL`    | http  | `http://localhost:$PORT` | URL publique (sert d'identifiant de ressource OAuth) |
@@ -115,6 +134,20 @@ claude mcp add --transport http gitlab https://gitlab-mcp.example.com/mcp \
 
 Puis `/mcp` dans Claude Code → *Authenticate* : le navigateur s'ouvre sur le SSO.
 
+### VictoriaLogs / VictoriaMetrics derrière oauth2-proxy
+
+En mode OIDC, le serveur **transmet le token de l'utilisateur** (déjà vérifié : `iss`, signature, `exp`, `aud`/`azp`) à `VICTORIALOGS_URL` et `VICTORIAMETRICS_URL`. L'oauth2-proxy du même realm applique donc ses règles (email, groupes) par utilisateur, sans secret côté serveur. Le token n'est jamais envoyé à GitLab.
+
+Côté oauth2-proxy :
+
+- `--skip-jwt-bearer-tokens=true` : accepter un `Authorization: Bearer` au lieu du cookie de session ;
+- `--extra-jwt-issuers=<OIDC_ISSUER>=<audience>` : l'audience doit figurer dans le claim `aud` du token. Keycloak met `aud=account` par défaut : ajouter un *audience mapper* sur le client MCP (par ex. l'audience du client oauth2-proxy) et utiliser cette valeur ;
+- le token doit porter `email` (scope `email`) ; si `email_verified` est faux, `--insecure-oidc-allow-unverified-email`.
+
+Un rejet de l'oauth2-proxy (redirection vers le login, 401, 403) remonte comme erreur d'outil explicite (`VictoriaLogs (oauth2-proxy) rejected the token…`, idem pour VictoriaMetrics).
+
+En login GitLab, il n'y a pas de token du realm : utiliser `VICTORIALOGS_TOKEN` / `VICTORIAMETRICS_TOKEN`, ou des URLs internes sans proxy. Le token GitLab de l'utilisateur n'est jamais transmis.
+
 ### Débugger l'OAuth
 
 Quand l'auth échoue dans Claude Code, isoler l'étape fautive :
@@ -150,6 +183,7 @@ Causes fréquentes :
 2. `list_pipelines` avec `status: "failed"` (et `ref` si besoin)
 3. `list_jobs` avec `pipeline_id` et `scope: ["failed"]`
 4. `get_job` avec `include_log: true` pour lire l'erreur
+5. Si l'erreur vient du déploiement ou du runtime : `log_hits` pour situer le début du problème, puis `query_logs` (`list_log_field_values` pour trouver les noms d'apps / pods) ; côté métriques, `list_scrape_targets` puis `query_metrics_range` (`list_metric_label_values` avec `__name__` pour trouver les métriques)
 
 ## Développement
 

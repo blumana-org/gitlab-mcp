@@ -8,6 +8,8 @@ import {
   type GitLabOAuthConfig,
 } from "../src/gitlab-oauth.ts";
 import { startHttpServer } from "../src/http.ts";
+import { VictoriaLogsClient } from "../src/victorialogs.ts";
+import { VictoriaMetricsClient } from "../src/victoriametrics.ts";
 
 const APP_ID = "mcp-app-uid";
 
@@ -25,6 +27,8 @@ let config: GitLabOAuthConfig;
 let tokenInfoCalls = 0;
 let apiAuth: (string | null)[] = [];
 let tokenInfoDown = false;
+let logsAuth: (string | null)[] = [];
+let metricsAuth: (string | null)[] = [];
 
 beforeAll(() => {
   gitlab = Bun.serve({
@@ -38,6 +42,14 @@ beforeAll(() => {
         const t = tokens[token] ?? { status: 401, body: { error: "invalid_token" } };
         return Response.json(t.body, { status: t.status ?? 200 });
       },
+      "/metrics/api/v1/query": (req) => {
+        metricsAuth.push(req.headers.get("authorization"));
+        return Response.json({ status: "success", data: { resultType: "vector", result: [] } });
+      },
+      "/logs/select/logsql/query": (req) => {
+        logsAuth.push(req.headers.get("authorization"));
+        return new Response("");
+      },
       "/api/v4/projects": (req) => {
         apiAuth.push(req.headers.get("authorization"), req.headers.get("private-token"));
         return Response.json([{ id: 1, path_with_namespace: "grp/app" }]);
@@ -49,6 +61,10 @@ beforeAll(() => {
     port: 0,
     publicUrl: "https://mcp.example.com",
     gitlab: new GitLabClient(config.url, null),
+    victoria: {
+      logs: new VictoriaLogsClient(`${gitlab.url.origin}/logs`, "logs-static-token"),
+      metrics: new VictoriaMetricsClient(`${gitlab.url.origin}/metrics`, null),
+    },
     auth: gitlabOAuthProvider(config),
   });
 });
@@ -131,4 +147,16 @@ test("validated tokens are cached until TTL or expiry", async () => {
 test("boot check compares GitLab's issuer with the advertised one", async () => {
   expect(await checkGitLabOAuth(config)).toContain(`issuer ${gitlab.url.origin}`);
   await expect(checkGitLabOAuth({ ...config, issuer: "https://elsewhere" })).rejects.toThrow(/GITLAB_OAUTH_ISSUER/);
+});
+
+test("VictoriaLogs gets the static token, never the user's GitLab token", async () => {
+  const res = await rpc("tools/call", { name: "query_logs", arguments: { query: "error" } }, "user-token");
+  expect(((await res.json()) as any).result.isError).toBeFalsy();
+  expect(logsAuth).toEqual(["Bearer logs-static-token"]);
+});
+
+test("VictoriaMetrics without a static token gets no credentials, never the user's GitLab token", async () => {
+  const res = await rpc("tools/call", { name: "query_metrics", arguments: { query: "up" } }, "user-token");
+  expect(((await res.json()) as any).result.isError).toBeFalsy();
+  expect(metricsAuth).toEqual([null]);
 });

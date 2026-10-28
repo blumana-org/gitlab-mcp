@@ -2,7 +2,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { AuthUnavailableError, protectedResourceMetadata, type AuthProvider } from "./auth.ts";
 import type { GitLabClient } from "./gitlab.ts";
-import { createMcpServer } from "./server.ts";
+import { createMcpServer, type VictoriaClients } from "./server.ts";
 
 export interface HttpOptions {
   port: number;
@@ -10,6 +10,8 @@ export interface HttpOptions {
   publicUrl: string;
   /** With GitLab OAuth auth, carries no token: each request calls GitLab as its caller. */
   gitlab: GitLabClient;
+  /** Absent backends = tools disabled. With OIDC auth, each request uses the caller's realm token. */
+  victoria?: VictoriaClients;
   /** Log every auth decision, not only rejections. */
   debug?: boolean;
   /** null = authentication disabled (dev only). */
@@ -18,7 +20,7 @@ export interface HttpOptions {
 
 const PRM_PATH = "/.well-known/oauth-protected-resource";
 
-export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }: HttpOptions) {
+export function startHttpServer({ port, publicUrl, gitlab, victoria = {}, auth, debug = false }: HttpOptions) {
   const base = publicUrl.replace(/\/+$/, "");
   const resource = `${base}/mcp`;
   const metadataUrl = `${base}${PRM_PATH}/mcp`;
@@ -83,8 +85,14 @@ export function startHttpServer({ port, publicUrl, gitlab, auth, debug = false }
 
     // GitLab login: the user's own token, validated as issued to our GitLab app, so GitLab enforces their permissions.
     const gl = auth?.kind === "gitlab" && authInfo ? gitlab.asUser(authInfo.token) : gitlab;
+    // OIDC: Victoria* sit behind an oauth2-proxy of the same realm, so the verified realm token is forwarded.
+    // Never to GitLab, and never a GitLab token to Victoria*.
+    const forward = auth?.kind === "oidc" && authInfo ? authInfo.token : null;
+    const vc: VictoriaClients = forward
+      ? { logs: victoria.logs?.asUser(forward), metrics: victoria.metrics?.asUser(forward) }
+      : victoria;
     // Stateless: one server + transport per request, so any replica can serve any call.
-    const server = createMcpServer(gl);
+    const server = createMcpServer(gl, vc);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

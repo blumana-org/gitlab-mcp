@@ -111,7 +111,7 @@ for (const url of candidates) {
   console.log(`  · ${url} -> HTTP ${res.status}`);
 }
 if (!as) fail("no metadata found: the IdP must expose OAuth or OIDC discovery for this issuer");
-if (as.issuer !== issuer) warn(`metadata issuer "${as.issuer}" != "${issuer}" -> OIDC_ISSUER must match it exactly`);
+if (as.issuer !== issuer) warn(`metadata issuer "${as.issuer}" != "${issuer}" -> OIDC_ISSUER / GITLAB_OAUTH_ISSUER must match it exactly`);
 else ok("issuer matches");
 for (const k of ["authorization_endpoint", "token_endpoint"]) {
   if (!as[k]) fail(`missing ${k}`);
@@ -206,7 +206,7 @@ const list = await mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/list" }, toke
 const tools = ((await list.json()) as any).result?.tools?.map((t: any) => t.name) ?? [];
 ok(`tools: ${tools.join(", ")}`);
 
-// 7. A real tool call: exercises the server -> GitLab leg (PAT, network, GITLAB_URL).
+// 7. A real tool call: exercises the server -> GitLab leg (PAT or user token, network, GITLAB_URL).
 step("7. Tool call (search_projects)");
 const t0 = performance.now();
 const call = await mcpPost(

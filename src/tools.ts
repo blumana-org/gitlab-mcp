@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { GitLabClient, cleanLog, projectPath, tail, type Query } from "./gitlab.ts";
+import { safe } from "./tool-utils.ts";
 
 const project = z
   .union([z.string(), z.number()])
@@ -73,27 +74,6 @@ const slimTag = (t: any) => ({
   total_size: t.total_size,
   created_at: t.created_at,
 });
-
-const json = (data: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-});
-
-// Logs one line per call on stderr (safe in stdio mode) and turns errors into tool errors.
-function safe<A>(name: string, fn: (args: A) => Promise<unknown>) {
-  return async (args: A) => {
-    const start = performance.now();
-    const elapsed = () => `${Math.round(performance.now() - start)}ms`;
-    try {
-      const result = json(await fn(args));
-      console.error(`[tool] ${name} ok ${elapsed()}`);
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[tool] ${name} error ${elapsed()}: ${message}`);
-      return { isError: true, content: [{ type: "text" as const, text: message }] };
-    }
-  };
-}
 
 export function registerTools(server: McpServer, gl: GitLabClient) {
   server.registerTool(

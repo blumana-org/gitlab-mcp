@@ -13,7 +13,27 @@ export interface OidcConfig {
   jwksUri?: string;
 }
 
-const list = (v: string | undefined) => v?.split(/[\s,]+/).filter(Boolean) ?? [];
+export const list = (v: string | undefined) => v?.split(/[\s,]+/).filter(Boolean) ?? [];
+
+export type TokenVerifier = (token: string) => Promise<AuthInfo>;
+
+/** How /mcp bearer tokens are validated, and which authorization server MCP clients log in with. */
+export interface AuthProvider {
+  /** `gitlab`: tokens are GitLab OAuth tokens, and GitLab is called with the caller's own token. */
+  kind: "oidc" | "gitlab";
+  /** Authorization server advertised in the RFC 9728 metadata. */
+  issuer: string;
+  /** Scopes advertised to MCP clients (they request these from the authorization server). */
+  scopes: string[];
+  verify: TokenVerifier;
+  /** What a valid token must carry, logged next to a rejected token's details. */
+  expected: Record<string, unknown>;
+  /** Unverified details of a rejected token, for logs (never the token itself). */
+  describe: (token: string) => Record<string, unknown>;
+}
+
+/** The authorization server could not be reached: answer 503, not 401 (the client must not re-login). */
+export class AuthUnavailableError extends Error {}
 
 export function oidcConfigFromEnv(env = process.env): OidcConfig | null {
   if (!env.OIDC_ISSUER) return null;
@@ -38,8 +58,6 @@ async function discoverJwksUri(issuer: string): Promise<string> {
   if (!jwks_uri) throw new Error(`No jwks_uri in OIDC discovery document of ${issuer}`);
   return jwks_uri;
 }
-
-export type TokenVerifier = (token: string) => Promise<AuthInfo>;
 
 export function createTokenVerifier(config: OidcConfig): TokenVerifier {
   let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
@@ -71,14 +89,25 @@ function scopesOf(payload: JWTPayload): string[] {
   return [];
 }
 
-/** RFC 9728 Protected Resource Metadata: tells MCP clients which IdP to log in with. */
-export function protectedResourceMetadata(config: OidcConfig, resource: string) {
+export function oidcProvider(config: OidcConfig): AuthProvider {
+  return {
+    kind: "oidc",
+    issuer: config.issuer,
+    scopes: config.scopes,
+    verify: createTokenVerifier(config),
+    expected: { iss: config.issuer, aud: config.audience, azp: config.clientId },
+    describe: describeToken,
+  };
+}
+
+/** RFC 9728 Protected Resource Metadata: tells MCP clients which authorization server to log in with. */
+export function protectedResourceMetadata(auth: Pick<AuthProvider, "issuer" | "scopes">, resource: string) {
   return {
     resource,
-    authorization_servers: [config.issuer],
-    scopes_supported: config.scopes,
+    authorization_servers: [auth.issuer],
+    scopes_supported: auth.scopes,
     bearer_methods_supported: ["header"],
-    resource_name: "GitLab MCP",
+    resource_name: "DevOps MCP",
   };
 }
 

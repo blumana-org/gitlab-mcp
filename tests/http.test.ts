@@ -1,10 +1,15 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { createTokenVerifier, oidcConfigFromEnv, type OidcConfig } from "./auth.ts";
-import { GitLabClient } from "./gitlab.ts";
-import { startHttpServer } from "./http.ts";
+import { createTokenVerifier, oidcConfigFromEnv, oidcProvider, type OidcConfig } from "../src/auth.ts";
+import { GitLabClient } from "../src/gitlab.ts";
+import { startHttpServer } from "../src/http.ts";
+import { VictoriaLogsClient } from "../src/victorialogs.ts";
+import { VictoriaMetricsClient } from "../src/victoriametrics.ts";
 
 let idp: ReturnType<typeof Bun.serve>;
+/** Fake GitLab + VictoriaLogs/VictoriaMetrics (behind oauth2-proxy): record which credentials each one receives. */
+let upstream: ReturnType<typeof Bun.serve>;
+const received = { gitlab: [] as Record<string, string | null>[], victorialogs: [] as (string | null)[], victoriametrics: [] as (string | null)[] };
 let mcp: ReturnType<typeof startHttpServer>;
 let privateKey: CryptoKey;
 let issuer: string;
@@ -25,18 +30,40 @@ beforeAll(async () => {
   });
   issuer = idp.url.origin;
 
+  upstream = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      const { pathname } = new URL(req.url);
+      if (pathname.startsWith("/logs/")) {
+        received.victorialogs.push(req.headers.get("authorization"));
+        return new Response('{"_time":"t","_msg":"boom"}\n');
+      }
+      if (pathname.startsWith("/metrics/")) {
+        received.victoriametrics.push(req.headers.get("authorization"));
+        return Response.json({ status: "success", data: { resultType: "vector", result: [] } });
+      }
+      received.gitlab.push({ token: req.headers.get("private-token"), authorization: req.headers.get("authorization") });
+      return Response.json({ id: 1, status: "failed" });
+    },
+  });
+
   const config: OidcConfig = { issuer, clientId: CLIENT_ID, scopes: ["openid", "email"] };
   mcp = startHttpServer({
     port: 0,
     publicUrl: "https://mcp.example.com",
-    gitlab: new GitLabClient("https://gitlab.invalid", "t"),
-    auth: { config, verify: createTokenVerifier(config) },
+    gitlab: new GitLabClient(upstream.url.origin, "server-pat"),
+    victoria: {
+      logs: new VictoriaLogsClient(`${upstream.url.origin}/logs`, "ignored-static-token"),
+      metrics: new VictoriaMetricsClient(`${upstream.url.origin}/metrics`, "ignored-static-token"),
+    },
+    auth: oidcProvider(config),
   });
 });
 
 afterAll(() => {
   mcp.stop(true);
   idp.stop(true);
+  upstream.stop(true);
 });
 
 const sign = (claims: Record<string, unknown>, iss = issuer) =>
@@ -48,7 +75,7 @@ const sign = (claims: Record<string, unknown>, iss = issuer) =>
     .setExpirationTime("5m")
     .sign(privateKey);
 
-const listTools = (token?: string) =>
+const rpc = (method: string, params: unknown, token?: string) =>
   fetch(new URL("/mcp", mcp.url), {
     method: "POST",
     headers: {
@@ -56,8 +83,9 @@ const listTools = (token?: string) =>
       accept: "application/json, text/event-stream",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
+const listTools = (token?: string) => rpc("tools/list", {}, token);
 
 test("serves protected resource metadata", async () => {
   const res = await fetch(new URL("/.well-known/oauth-protected-resource/mcp", mcp.url));
@@ -107,4 +135,19 @@ test("oidcConfigFromEnv requires audience or client id", () => {
     issuer: "https://idp/",
     scopes: ["openid", "profile", "email"],
   });
+});
+
+test("OIDC: the user's token goes to Victoria* only, GitLab keeps the server PAT", async () => {
+  const token = await sign({ azp: CLIENT_ID });
+  const logs = (await (await rpc("tools/call", { name: "query_logs", arguments: { query: "error" } }, token)).json()) as any;
+  expect(logs.result.isError).toBeFalsy();
+  expect(received.victorialogs.at(-1)).toBe(`Bearer ${token}`);
+
+  const metrics = (await (await rpc("tools/call", { name: "query_metrics", arguments: { query: "up" } }, token)).json()) as any;
+  expect(metrics.result.isError).toBeFalsy();
+  expect(received.victoriametrics.at(-1)).toBe(`Bearer ${token}`);
+
+  const pipeline = (await (await rpc("tools/call", { name: "get_pipeline", arguments: { project: 1, pipeline_id: 2 } }, token)).json()) as any;
+  expect(pipeline.result.isError).toBeFalsy();
+  expect(received.gitlab.at(-1)).toEqual({ token: "server-pat", authorization: null });
 });

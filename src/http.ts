@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { AuthUnavailableError, protectedResourceMetadata, type AuthProvider } from "./auth.ts";
+import { CORS_HEADERS, DEFAULT_REDIRECT_ALLOWLIST, createDcrShim, preflight } from "./dcr-shim.ts";
 import type { GitLabClient } from "./gitlab.ts";
 import { createMcpServer, type VictoriaClients } from "./server.ts";
 
@@ -16,14 +17,33 @@ export interface HttpOptions {
   debug?: boolean;
   /** null = authentication disabled (dev only). */
   auth: AuthProvider | null;
+  /**
+   * Answer dynamic client registration with the provider's pre-registered public client (default on
+   * when it has one), so MCP clients log in without a manually entered client id.
+   */
+  dcrShim?: boolean;
+  /** Redirect URIs the shim accepts (default: localhost + Claude callbacks). */
+  redirectAllowlist?: string[];
 }
 
 const PRM_PATH = "/.well-known/oauth-protected-resource";
+export const REGISTER_PATH = "/oauth/register";
 
-export function startHttpServer({ port, publicUrl, gitlab, victoria = {}, auth, debug = false }: HttpOptions) {
+export function startHttpServer(opts: HttpOptions) {
+  const { port, publicUrl, gitlab, victoria = {}, auth, debug = false } = opts;
   const base = publicUrl.replace(/\/+$/, "");
   const resource = `${base}/mcp`;
   const metadataUrl = `${base}${PRM_PATH}/mcp`;
+
+  const shim =
+    auth?.publicClientId && opts.dcrShim !== false
+      ? createDcrShim({
+          discoveryUrl: auth.discoveryUrl,
+          clientId: auth.publicClientId,
+          registrationEndpoint: `${base}${REGISTER_PATH}`,
+          redirectAllowlist: opts.redirectAllowlist?.length ? opts.redirectAllowlist : DEFAULT_REDIRECT_ALLOWLIST,
+        })
+      : null;
 
   const scope = auth?.scopes.length ? `, scope="${auth.scopes.join(" ")}"` : "";
   const unauthorized = (error: string, description: string) => {
@@ -107,15 +127,29 @@ export function startHttpServer({ port, publicUrl, gitlab, victoria = {}, auth, 
 
   const prm = (req: Request) => {
     if (debug) console.error(`[auth] metadata requested: ${new URL(req.url).pathname}`);
-    return auth ? Response.json(protectedResourceMetadata(auth, resource)) : new Response("Not found", { status: 404 });
+    if (!auth) return new Response("Not found", { status: 404 });
+    return Response.json(protectedResourceMetadata(auth, resource, shim ? base : auth.issuer), { headers: CORS_HEADERS });
   };
+
+  // Every path a client may derive from the authorization server URL (`base`, no path component).
+  type Handler = (req: Request) => Response | Promise<Response>;
+  const shimRoutes: Record<string, Partial<Record<"GET" | "POST" | "OPTIONS", Handler>>> = shim
+    ? {
+        "/.well-known/oauth-authorization-server": { GET: shim.metadata, OPTIONS: preflight },
+        "/.well-known/oauth-authorization-server/mcp": { GET: shim.metadata, OPTIONS: preflight },
+        "/.well-known/openid-configuration": { GET: shim.metadata, OPTIONS: preflight },
+        "/mcp/.well-known/openid-configuration": { GET: shim.metadata, OPTIONS: preflight },
+        [REGISTER_PATH]: { POST: shim.register, OPTIONS: preflight },
+      }
+    : {};
 
   return Bun.serve({
     port,
     routes: {
       "/health": new Response("ok"),
-      [PRM_PATH]: prm,
-      [`${PRM_PATH}/mcp`]: prm,
+      [PRM_PATH]: { GET: prm, OPTIONS: preflight },
+      [`${PRM_PATH}/mcp`]: { GET: prm, OPTIONS: preflight },
+      ...shimRoutes,
       "/mcp": handleMcp,
     },
     fetch: (req) => {

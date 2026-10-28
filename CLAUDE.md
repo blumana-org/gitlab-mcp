@@ -23,6 +23,7 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - `src/http.ts` — `Bun.serve` : `/mcp` (Streamable HTTP **stateless**, un server+transport par requête), `/health`, métadonnées RFC 9728
 - `src/doctor.ts` — `bun run doctor <mcp-url> [--client-id]` : rejoue le flux OAuth MCP étape par étape (découverte, login PKCE, appel authentifié)
 - `src/auth.ts` — interface `AuthProvider` (commune aux deux modes), config OIDC, vérification JWT (`jose`, JWKS découvert), métadonnées de ressource protégée
+- `src/dcr-shim.ts` — shim d'enregistrement dynamique (comme r2e-mcp) : copie des métadonnées de l'IdP avec `registration_endpoint` = `/oauth/register`, qui renvoie toujours le client public pré-enregistré
 - `src/gitlab-oauth.ts` — login GitLab : validation des tokens via `/oauth/token/info` (+ cache), check de l'issuer au boot
 - `src/gitlab.ts` — client REST v4 minimal (`fetch` + `PRIVATE-TOKEN` ou `Bearer` via `asUser()`), pagination via headers `x-*`, helpers de log (`cleanLog`, `tail`)
 - `src/tools.ts` — outils GitLab (`registerTool` + schémas zod) et projections « slim »
@@ -53,6 +54,7 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - Les rejets sont toujours loggés (raison + claims attendus/reçus, jamais le token) ; `MCP_DEBUG=true` logue aussi les succès.
 - Token utilisateur vers GitLab : **uniquement** en login GitLab, après validation de l'application (`gitlab.asUser`). En mode OIDC, ne jamais transmettre le token de l'IdP à GitLab ; GitLab utilise `GITLAB_TOKEN`. En login GitLab, `GITLAB_TOKEN` est ignoré.
 - Token utilisateur vers VictoriaLogs / VictoriaMetrics : **uniquement** en OIDC, après vérification locale du JWT (`asUser` dans `http.ts`), et uniquement vers `VICTORIALOGS_URL` / `VICTORIAMETRICS_URL` (oauth2-proxy du même realm). Les `*_TOKEN` sont alors ignorés. En login GitLab / sans auth : `VICTORIALOGS_TOKEN` / `VICTORIAMETRICS_TOKEN` ou rien, jamais le token GitLab de l'utilisateur.
+- Shim DCR : actif si le provider a un client public (`OIDC_CLIENT_ID` / `GITLAB_OAUTH_CLIENT_ID`) et `MCP_DCR_SHIM` ≠ `false`. Les métadonnées de ressource annoncent alors le serveur comme authorization server ; la copie des métadonnées garde l'`issuer` et les endpoints de l'IdP. `/oauth/register` ne crée rien chez l'IdP et filtre les redirect URIs (`MCP_REDIRECT_URIS`). Il ne remplace **pas** le contrôle `azp` / application, qui reste strict.
 - Le `AuthInfo` validé est passé à `transport.handleRequest(req, { authInfo })` et accessible dans les handlers via `extra.authInfo`.
 
 ## Ajouter un outil

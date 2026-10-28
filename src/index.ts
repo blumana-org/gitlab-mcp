@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { oidcConfigFromEnv, oidcProvider, type AuthProvider } from "./auth.ts";
+import { list, oidcConfigFromEnv, oidcProvider, type AuthProvider } from "./auth.ts";
 import { GitLabClient } from "./gitlab.ts";
 import { checkGitLabOAuth, gitlabOAuthConfigFromEnv, gitlabOAuthProvider } from "./gitlab-oauth.ts";
 import { startHttpServer } from "./http.ts";
@@ -75,8 +75,15 @@ if (transport === "stdio") {
   if (!perUser) checkPat(gitlab);
   const victoria = setupVictoria(auth?.kind === "oidc");
 
-  const server = startHttpServer({ port, publicUrl, gitlab, victoria, auth, debug });
+  const dcrShim = process.env.MCP_DCR_SHIM !== "false";
+  const redirectAllowlist = list(process.env.MCP_REDIRECT_URIS);
+  const server = startHttpServer({ port, publicUrl, gitlab, victoria, auth, debug, dcrShim, redirectAllowlist });
   const mode = auth ? `${auth.kind} via ${auth.issuer}` : "DISABLED";
+  if (auth && dcrShim && auth.publicClientId) {
+    console.error(`DCR shim on: client registrations get client_id ${auth.publicClientId} (MCP_DCR_SHIM=false to disable)`);
+  } else if (auth && dcrShim) {
+    console.error("DCR shim off: set OIDC_CLIENT_ID so MCP clients get the pre-registered client automatically");
+  }
   console.error(`${SERVER_NAME} listening on ${server.url} (public: ${publicUrl}, auth: ${mode})`);
 } else {
   throw new Error(`Unknown MCP_TRANSPORT "${transport}" (expected stdio or http)`);

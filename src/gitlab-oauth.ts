@@ -112,6 +112,8 @@ export function gitlabOAuthProvider(config: GitLabOAuthConfig): AuthProvider {
   return {
     kind: "gitlab",
     issuer: config.issuer,
+    discoveryUrl: `${config.url}/.well-known/openid-configuration`,
+    publicClientId: config.clientId,
     scopes: config.scopes,
     verify: createGitLabTokenVerifier(config),
     expected: { application: config.clientId, scopes: config.scopes },

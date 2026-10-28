@@ -26,7 +26,7 @@ Toujours Bun : pas de node/npm/ts-node/jest/dotenv (Bun charge `.env` tout seul)
 - `src/gitlab-oauth.ts` — login GitLab : validation des tokens via `/oauth/token/info` (+ cache), check de l'issuer au boot
 - `src/gitlab.ts` — client REST v4 minimal (`fetch` + `PRIVATE-TOKEN` ou `Bearer` via `asUser()`), pagination via headers `x-*`, helpers de log (`cleanLog`, `tail`)
 - `src/tools.ts` — déclaration des outils MCP (`registerTool` + schémas zod) et projections « slim »
-- `src/*.test.ts` — tests ; `tools.test.ts` appelle les outils via un client MCP en mémoire (`InMemoryTransport`) avec `fetch` mocké ; `http.test.ts` simule un IdP (JWKS local) et `gitlab-oauth.test.ts` un GitLab (`/oauth/token/info`) pour tester les flux d'auth de bout en bout
+- `tests/*.test.ts` — tests (séparés de `src/`, importent depuis `../src/`) ; `tools.test.ts` appelle les outils via un client MCP en mémoire (`InMemoryTransport`) avec `fetch` mocké ; `http.test.ts` simule un IdP (JWKS local) et `gitlab-oauth.test.ts` un GitLab (`/oauth/token/info`) pour tester les flux d'auth de bout en bout
 
 ## Conventions
 

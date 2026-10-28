@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { GitLabClient } from "./gitlab.ts";
-import { createMcpServer } from "./server.ts";
+import { GitLabClient } from "../src/gitlab.ts";
+import { createMcpServer } from "../src/server.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

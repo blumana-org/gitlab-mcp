@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { GitLabClient } from "./gitlab.ts";
+import { GitLabClient } from "../src/gitlab.ts";
 import {
   checkGitLabOAuth,
   createGitLabTokenVerifier,
   gitlabOAuthConfigFromEnv,
   gitlabOAuthProvider,
   type GitLabOAuthConfig,
-} from "./gitlab-oauth.ts";
-import { startHttpServer } from "./http.ts";
+} from "../src/gitlab-oauth.ts";
+import { startHttpServer } from "../src/http.ts";
 
 const APP_ID = "mcp-app-uid";
 

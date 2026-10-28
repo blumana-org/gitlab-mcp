@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { GitLabClient, GitLabError, cleanLog, projectPath, tail } from "./gitlab.ts";
+import { GitLabClient, GitLabError, cleanLog, projectPath, tail } from "../src/gitlab.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

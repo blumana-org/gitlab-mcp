@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { createTokenVerifier, oidcConfigFromEnv, oidcProvider, type OidcConfig } from "./auth.ts";
-import { GitLabClient } from "./gitlab.ts";
-import { startHttpServer } from "./http.ts";
+import { createTokenVerifier, oidcConfigFromEnv, oidcProvider, type OidcConfig } from "../src/auth.ts";
+import { GitLabClient } from "../src/gitlab.ts";
+import { startHttpServer } from "../src/http.ts";
 
 let idp: ReturnType<typeof Bun.serve>;
 let mcp: ReturnType<typeof startHttpServer>;
